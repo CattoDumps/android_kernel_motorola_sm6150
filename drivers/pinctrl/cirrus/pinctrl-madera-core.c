@@ -1,11 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Pinctrl for Cirrus Logic Madera codecs
  *
- * Copyright 2016-2017 Cirrus Logic
+ * Copyright (C) 2016-2018 Cirrus Logic
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
+ * it under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; version 2.
  */
 
 #include <linux/err.h>
@@ -21,7 +22,7 @@
 #include <linux/mfd/madera/core.h>
 #include <linux/mfd/madera/registers.h>
 
-#include <../pinctrl-utils.h>
+#include "../pinctrl-utils.h"
 
 #include "pinctrl-madera.h"
 
@@ -398,16 +399,6 @@ static const struct {
 		.group_names = madera_pin_single_group_names,
 		.func = 0x157
 	},
-	{
-		.name = "aux-pdm-clk",
-		.group_names = madera_pin_single_group_names,
-		.func = 0x280
-	},
-	{
-		.name = "aux-pdm-dat",
-		.group_names = madera_pin_single_group_names,
-		.func = 0x281
-	},
 };
 
 static u16 madera_pin_make_drv_str(struct madera_pin_private *priv,
@@ -455,12 +446,11 @@ static const char *madera_get_group_name(struct pinctrl_dev *pctldev,
 {
 	struct madera_pin_private *priv = pinctrl_dev_get_drvdata(pctldev);
 
-	if (selector < priv->chip->n_pin_groups) {
+	if (selector < priv->chip->n_pin_groups)
 		return priv->chip->pin_groups[selector].name;
-	} else {
-		selector -= priv->chip->n_pin_groups;
-		return madera_pin_single_group_names[selector];
-	}
+
+	selector -= priv->chip->n_pin_groups;
+	return madera_pin_single_group_names[selector];
 }
 
 static int madera_get_group_pins(struct pinctrl_dev *pctldev,
@@ -512,9 +502,9 @@ static void madera_pin_dbg_show_fn(struct madera_pin_private *priv,
 	}
 }
 
-static void madera_pin_dbg_show(struct pinctrl_dev *pctldev,
-				struct seq_file *s,
-				unsigned int pin)
+static void __maybe_unused madera_pin_dbg_show(struct pinctrl_dev *pctldev,
+					       struct seq_file *s,
+					       unsigned int pin)
 {
 	struct madera_pin_private *priv = pinctrl_dev_get_drvdata(pctldev);
 	unsigned int conf[2];
@@ -563,12 +553,15 @@ static void madera_pin_dbg_show(struct pinctrl_dev *pctldev,
 		seq_puts(s, "SCHMITT");
 }
 
+
 static const struct pinctrl_ops madera_pin_group_ops = {
 	.get_groups_count = madera_get_groups_count,
 	.get_group_name = madera_get_group_name,
 	.get_group_pins = madera_get_group_pins,
+#if IS_ENABLED(CONFIG_OF)
 	.dt_node_to_map = pinconf_generic_dt_node_to_map_all,
 	.dt_free_map = pinctrl_utils_free_map,
+#endif
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 	.pin_dbg_show = madera_pin_dbg_show,
 #endif
@@ -615,7 +608,7 @@ static int madera_mux_set_mux(struct pinctrl_dev *pctldev,
 	unsigned int n_chip_groups = priv->chip->n_pin_groups;
 	const char *func_name = madera_mux_funcs[selector].name;
 	unsigned int reg;
-	int i, ret;
+	int i, ret = 0;
 
 	dev_dbg(priv->dev, "%s selecting %u (%s) for group %u (%s)\n",
 		__func__, selector, func_name, group,
@@ -1011,12 +1004,9 @@ static int madera_pin_probe(struct platform_device *pdev)
 
 	priv->dev = &pdev->dev;
 	priv->madera = madera;
+	pdev->dev.of_node = madera->dev->of_node;
 
 	switch (madera->type) {
-	case CS47L15:
-		if (IS_ENABLED(CONFIG_PINCTRL_CS47L15))
-			priv->chip = &cs47l15_pin_chip;
-		break;
 	case CS47L35:
 		if (IS_ENABLED(CONFIG_PINCTRL_CS47L35))
 			priv->chip = &cs47l35_pin_chip;
@@ -1031,11 +1021,6 @@ static int madera_pin_probe(struct platform_device *pdev)
 		if (IS_ENABLED(CONFIG_PINCTRL_CS47L90))
 			priv->chip = &cs47l90_pin_chip;
 		break;
-	case CS47L92:
-	case CS47L93:
-		if (IS_ENABLED(CONFIG_PINCTRL_CS47L92))
-			priv->chip = &cs47l92_pin_chip;
-		break;
 	default:
 		break;
 	}
@@ -1045,15 +1030,17 @@ static int madera_pin_probe(struct platform_device *pdev)
 
 	madera_pin_desc.npins = priv->chip->n_pins;
 
-	priv->pctl = devm_pinctrl_register(&pdev->dev, &madera_pin_desc, priv);
-	if (IS_ERR(priv->pctl)) {
-		ret = PTR_ERR(priv->pctl);
+	ret = devm_pinctrl_register_and_init(&pdev->dev,
+					     &madera_pin_desc,
+					     priv,
+					     &priv->pctl);
+	if (ret) {
 		dev_err(priv->dev, "Failed pinctrl register (%d)\n", ret);
 		return ret;
 	}
 
 	/* if the configuration is provided through pdata, apply it */
-	if (pdata) {
+	if (pdata && pdata->gpio_configs) {
 		ret = pinctrl_register_mappings(pdata->gpio_configs,
 						pdata->n_gpio_configs);
 		if (ret) {
@@ -1064,7 +1051,13 @@ static int madera_pin_probe(struct platform_device *pdev)
 		}
 	}
 
-	dev_dbg(priv->dev, "pinctrl registered\n");
+	ret = pinctrl_enable(priv->pctl);
+	if (ret) {
+		dev_err(priv->dev, "Failed to enable pinctrl (%d)\n", ret);
+		return ret;
+	}
+
+	dev_dbg(priv->dev, "pinctrl probed ok\n");
 
 	return 0;
 }
@@ -1079,5 +1072,5 @@ static struct platform_driver madera_pin_driver = {
 module_platform_driver(madera_pin_driver);
 
 MODULE_DESCRIPTION("Madera pinctrl driver");
-MODULE_AUTHOR("Richard Fitzgerald <rf@opensource.wolfsonmicro.com>");
+MODULE_AUTHOR("Richard Fitzgerald <rf@opensource.cirrus.com>");
 MODULE_LICENSE("GPL v2");
